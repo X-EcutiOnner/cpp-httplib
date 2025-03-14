@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <future>
 #include <limits>
 #include <memory>
@@ -57,6 +58,16 @@ MultipartFormData &get_file_value(MultipartFormDataItems &files,
   if (it != files.end()) { return *it; }
   throw std::runtime_error("invalid multipart form data name error");
 #endif
+}
+
+static void read_file(const std::string &path, std::string &out) {
+  std::ifstream fs(path, std::ios_base::binary);
+  if (!fs) throw std::runtime_error("File not found: " + path);
+  fs.seekg(0, std::ios_base::end);
+  auto size = fs.tellg();
+  fs.seekg(0);
+  out.resize(static_cast<size_t>(size));
+  fs.read(&out[0], static_cast<std::streamsize>(size));
 }
 
 #ifndef _WIN32
@@ -729,7 +740,7 @@ TEST(ChunkedEncodingTest, FromHTTPWatch_Online) {
   ASSERT_TRUE(res);
 
   std::string out;
-  detail::read_file("./image.jpg", out);
+  read_file("./image.jpg", out);
 
   EXPECT_EQ(StatusCode::OK_200, res->status);
   EXPECT_EQ(out, res->body);
@@ -782,7 +793,7 @@ TEST(ChunkedEncodingTest, WithContentReceiver_Online) {
   ASSERT_TRUE(res);
 
   std::string out;
-  detail::read_file("./image.jpg", out);
+  read_file("./image.jpg", out);
 
   EXPECT_EQ(StatusCode::OK_200, res->status);
   EXPECT_EQ(out, body);
@@ -814,7 +825,7 @@ TEST(ChunkedEncodingTest, WithResponseHandlerAndContentReceiver_Online) {
   ASSERT_TRUE(res);
 
   std::string out;
-  detail::read_file("./image.jpg", out);
+  read_file("./image.jpg", out);
 
   EXPECT_EQ(StatusCode::OK_200, res->status);
   EXPECT_EQ(out, body);
@@ -1361,6 +1372,14 @@ TEST(CancelTest, WithCancelLargePayloadDelete) {
   EXPECT_EQ(Error::Canceled, res.error());
 }
 
+static std::string remove_whitespace(const std::string &input) {
+  std::string output;
+  output.reserve(input.size());
+  std::copy_if(input.begin(), input.end(), std::back_inserter(output),
+               [](unsigned char c) { return !std::isspace(c); });
+  return output;
+}
+
 TEST(BaseAuthTest, FromHTTPWatch_Online) {
 #ifdef CPPHTTPLIB_DEFAULT_HTTPBIN
   auto host = "httpbin.org";
@@ -1388,8 +1407,8 @@ TEST(BaseAuthTest, FromHTTPWatch_Online) {
     auto res =
         cli.Get(path, {make_basic_authentication_header("hello", "world")});
     ASSERT_TRUE(res);
-    EXPECT_EQ("{\n  \"authenticated\": true, \n  \"user\": \"hello\"\n}\n",
-              res->body);
+    EXPECT_EQ("{\"authenticated\":true,\"user\":\"hello\"}",
+              remove_whitespace(res->body));
     EXPECT_EQ(StatusCode::OK_200, res->status);
   }
 
@@ -1397,8 +1416,8 @@ TEST(BaseAuthTest, FromHTTPWatch_Online) {
     cli.set_basic_auth("hello", "world");
     auto res = cli.Get(path);
     ASSERT_TRUE(res);
-    EXPECT_EQ("{\n  \"authenticated\": true, \n  \"user\": \"hello\"\n}\n",
-              res->body);
+    EXPECT_EQ("{\"authenticated\":true,\"user\":\"hello\"}",
+              remove_whitespace(res->body));
     EXPECT_EQ(StatusCode::OK_200, res->status);
   }
 
@@ -1454,8 +1473,8 @@ TEST(DigestAuthTest, FromHTTPWatch_Online) {
     for (const auto &path : paths) {
       auto res = cli.Get(path.c_str());
       ASSERT_TRUE(res);
-      EXPECT_EQ("{\n  \"authenticated\": true, \n  \"user\": \"hello\"\n}\n",
-                res->body);
+      EXPECT_EQ("{\"authenticated\":true,\"user\":\"hello\"}",
+                remove_whitespace(res->body));
       EXPECT_EQ(StatusCode::OK_200, res->status);
     }
 
@@ -1586,36 +1605,40 @@ TEST(YahooRedirectTest, Redirect_Online) {
   EXPECT_EQ("https://www.yahoo.com/", res->location);
 }
 
+// Previously "nghttp2.org" "/httpbin/redirect-to"
+#define REDIR_HOST "httpbingo.org"
+#define REDIR_PATH "/redirect-to"
+
 TEST(HttpsToHttpRedirectTest, Redirect_Online) {
-  SSLClient cli("nghttp2.org");
+  SSLClient cli(REDIR_HOST);
   cli.set_follow_location(true);
-  auto res = cli.Get(
-      "/httpbin/redirect-to?url=http%3A%2F%2Fwww.google.com&status_code=302");
+  auto res =
+      cli.Get(REDIR_PATH "?url=http%3A%2F%2Fexample.com&status_code=302");
   ASSERT_TRUE(res);
   EXPECT_EQ(StatusCode::OK_200, res->status);
 }
 
 TEST(HttpsToHttpRedirectTest2, Redirect_Online) {
-  SSLClient cli("nghttp2.org");
+  SSLClient cli(REDIR_HOST);
   cli.set_follow_location(true);
 
   Params params;
-  params.emplace("url", "http://www.google.com");
+  params.emplace("url", "http://example.com");
   params.emplace("status_code", "302");
 
-  auto res = cli.Get("/httpbin/redirect-to", params, Headers{});
+  auto res = cli.Get(REDIR_PATH, params, Headers{});
   ASSERT_TRUE(res);
   EXPECT_EQ(StatusCode::OK_200, res->status);
 }
 
 TEST(HttpsToHttpRedirectTest3, Redirect_Online) {
-  SSLClient cli("nghttp2.org");
+  SSLClient cli(REDIR_HOST);
   cli.set_follow_location(true);
 
   Params params;
-  params.emplace("url", "http://www.google.com");
+  params.emplace("url", "http://example.com");
 
-  auto res = cli.Get("/httpbin/redirect-to?status_code=302", params, Headers{});
+  auto res = cli.Get(REDIR_PATH "?status_code=302", params, Headers{});
   ASSERT_TRUE(res);
   EXPECT_EQ(StatusCode::OK_200, res->status);
 }
@@ -5133,6 +5156,14 @@ TEST(ServerRequestParsingTest, InvalidFieldValueContains_LF) {
   EXPECT_EQ("HTTP/1.1 400 Bad Request", out.substr(0, 24));
 }
 
+TEST(ServerRequestParsingTest, InvalidFieldNameContains_PreceedingSpaces) {
+  std::string out;
+  std::string request(
+      "GET /header_field_value_check HTTP/1.1\r\n  Test: val\r\n\r\n", 55);
+  test_raw_request(request, &out);
+  EXPECT_EQ("HTTP/1.1 400 Bad Request", out.substr(0, 24));
+}
+
 TEST(ServerRequestParsingTest, EmptyFieldValue) {
   std::string out;
 
@@ -6164,7 +6195,7 @@ TEST(SSLClientTest, ServerCertificateVerification4) {
 
 TEST(SSLClientTest, ServerCertificateVerification5_Online) {
   std::string cert;
-  detail::read_file(CA_CERT_FILE, cert);
+  read_file(CA_CERT_FILE, cert);
 
   SSLClient cli("google.com");
   cli.load_ca_cert_store(cert.data(), cert.size());
@@ -6809,38 +6840,41 @@ TEST(DecodeWithChunkedEncoding, BrotliEncoding_Online) {
 }
 #endif
 
+// Previously "https://nghttp2.org" "/httpbin/redirect-to"
+#undef REDIR_HOST // Silence compiler warning
+#define REDIR_HOST "https://httpbingo.org"
+
 TEST(HttpsToHttpRedirectTest, SimpleInterface_Online) {
-  Client cli("https://nghttp2.org");
+  Client cli(REDIR_HOST);
   cli.set_follow_location(true);
   auto res =
-      cli.Get("/httpbin/"
-              "redirect-to?url=http%3A%2F%2Fwww.google.com&status_code=302");
+      cli.Get(REDIR_PATH "?url=http%3A%2F%2Fexample.com&status_code=302");
 
   ASSERT_TRUE(res);
   EXPECT_EQ(StatusCode::OK_200, res->status);
 }
 
 TEST(HttpsToHttpRedirectTest2, SimpleInterface_Online) {
-  Client cli("https://nghttp2.org");
+  Client cli(REDIR_HOST);
   cli.set_follow_location(true);
 
   Params params;
-  params.emplace("url", "http://www.google.com");
+  params.emplace("url", "http://example.com");
   params.emplace("status_code", "302");
 
-  auto res = cli.Get("/httpbin/redirect-to", params, Headers{});
+  auto res = cli.Get(REDIR_PATH, params, Headers{});
   ASSERT_TRUE(res);
   EXPECT_EQ(StatusCode::OK_200, res->status);
 }
 
 TEST(HttpsToHttpRedirectTest3, SimpleInterface_Online) {
-  Client cli("https://nghttp2.org");
+  Client cli(REDIR_HOST);
   cli.set_follow_location(true);
 
   Params params;
-  params.emplace("url", "http://www.google.com");
+  params.emplace("url", "http://example.com");
 
-  auto res = cli.Get("/httpbin/redirect-to?status_code=302", params, Headers{});
+  auto res = cli.Get(REDIR_PATH "?status_code=302", params, Headers{});
   ASSERT_TRUE(res);
   EXPECT_EQ(StatusCode::OK_200, res->status);
 }
@@ -8351,3 +8385,86 @@ TEST(MaxTimeoutTest, ContentStreamSSL) {
   max_timeout_test(svr, cli, timeout, threshold);
 }
 #endif
+
+class EventDispatcher {
+public:
+  EventDispatcher() {}
+
+  void wait_event(DataSink *sink) {
+    unique_lock<mutex> lk(m_);
+    int id = id_;
+    cv_.wait(lk, [&] { return cid_ == id; });
+    sink->write(message_.data(), message_.size());
+  }
+
+  void send_event(const string &message) {
+    lock_guard<mutex> lk(m_);
+    cid_ = id_++;
+    message_ = message;
+    cv_.notify_all();
+  }
+
+private:
+  mutex m_;
+  condition_variable cv_;
+  atomic_int id_{0};
+  atomic_int cid_{-1};
+  string message_;
+};
+
+TEST(ClientInThreadTest, Issue2068) {
+  EventDispatcher ed;
+
+  Server svr;
+  svr.Get("/event1", [&](const Request & /*req*/, Response &res) {
+    res.set_chunked_content_provider("text/event-stream",
+                                     [&](size_t /*offset*/, DataSink &sink) {
+                                       ed.wait_event(&sink);
+                                       return true;
+                                     });
+  });
+
+  auto listen_thread = std::thread([&svr]() { svr.listen(HOST, PORT); });
+
+  svr.wait_until_ready();
+
+  thread event_thread([&] {
+    int id = 0;
+    while (svr.is_running()) {
+      this_thread::sleep_for(chrono::milliseconds(500));
+
+      std::stringstream ss;
+      ss << "data: " << id << "\n\n";
+      ed.send_event(ss.str());
+      id++;
+    }
+  });
+
+  auto se = detail::scope_exit([&] {
+    svr.stop();
+
+    listen_thread.join();
+    event_thread.join();
+
+    ASSERT_FALSE(svr.is_running());
+  });
+
+  {
+    auto client = detail::make_unique<Client>(HOST, PORT);
+    client->set_read_timeout(std::chrono::minutes(10));
+
+    std::atomic<bool> stop{false};
+
+    std::thread t([&] {
+      client->Get("/event1",
+                  [&](const char *, size_t) -> bool { return !stop; });
+    });
+
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    stop = true;
+    client->stop();
+    client.reset();
+
+    t.join();
+  }
+}
